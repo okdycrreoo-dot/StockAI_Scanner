@@ -28,19 +28,30 @@ import json  # 確保檔案最上方有 import json
 # --- 2. Google Sheets 連線與自動回填引擎 ---
 def sync_settings_to_sheets(updates):
     try:
-        import json  # 確保函數內或檔案最上方有這行
+        import json
+        import re
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         
-        # --- 核心防呆修正區 ---
+        # --- 核心防呆：處理多種格式的 Secrets ---
         raw_creds = st.secrets["connections"]["gsheets"]["service_account"]
         
         if isinstance(raw_creds, str):
-            # 處理 JSON 字串中的換行符號問題，避免解析錯誤
-            clean_creds = raw_creds.replace('\n', '\\n').replace('\\\\n', '\\n')
-            creds_dict = json.loads(clean_creds, strict=False)
+            # 1. 移除可能導致錯誤的換行符號
+            # 2. 處理 JSON 中的轉義斜線
+            clean_creds = raw_creds.strip()
+            if clean_creds.startswith("'") or clean_creds.startswith('"'):
+                clean_creds = clean_creds[1:-1]
+            
+            # 強制將文字中的 \n 轉換為真正的換行符號
+            try:
+                creds_dict = json.loads(clean_creds, strict=False)
+            except json.JSONDecodeError:
+                # 如果還是失敗，嘗試更激進的換行符替換
+                fixed_json = clean_creds.replace("\\n", "\n")
+                creds_dict = json.loads(fixed_json, strict=False)
         else:
             creds_dict = raw_creds
-        # ---------------------
+        # ------------------------------------
 
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
