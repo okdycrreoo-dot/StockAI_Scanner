@@ -28,17 +28,19 @@ import json  # 確保檔案最上方有 import json
 # --- 2. Google Sheets 連線與自動回填引擎 ---
 def sync_settings_to_sheets(updates):
     try:
+        import json  # 確保函數內或檔案最上方有這行
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         
-        # --- 關鍵修正區 ---
+        # --- 核心防呆修正區 ---
         raw_creds = st.secrets["connections"]["gsheets"]["service_account"]
         
-        # 防呆處理：如果讀到的是字串，就轉成字典
         if isinstance(raw_creds, str):
-            creds_dict = json.loads(raw_creds)
+            # 處理 JSON 字串中的換行符號問題，避免解析錯誤
+            clean_creds = raw_creds.replace('\n', '\\n').replace('\\\\n', '\\n')
+            creds_dict = json.loads(clean_creds, strict=False)
         else:
             creds_dict = raw_creds
-        # -----------------
+        # ---------------------
 
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
