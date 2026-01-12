@@ -25,50 +25,49 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. Google Sheets 連線與自動回填引擎 (V1.4 手動精準對接版) ---
+# --- 2. Google Sheets 連線與自動回填引擎 (V1.5 純淨連線版) ---
 def sync_settings_to_sheets(updates):
     try:
         from datetime import datetime
         import json
+        import re
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         
-        # 直接獲取原始字串並強力清洗換行符號
+        # 獲取 Secrets
         raw_val = st.secrets["connections"]["gsheets"]["service_account"]
         
-        # 如果 Secrets 是一串文字，我們用最暴力的方式還原 private_key
-        if isinstance(raw_val, str):
-            # 1. 移除前後所有可能的包裹符號
-            clean_str = raw_val.strip().strip("'").strip('"').strip('```')
-            
-            # 2. 針對私鑰進行還原：將所有轉義的斜線換行 (\n 或 \\n) 統一還原
-            # 這是為了解決截圖中顯示的 Invalid \escape 報錯
-            clean_str = clean_str.replace('\\\\n', '\n').replace('\\n', '\n')
-            
-            # 3. 如果連 json.loads 都失敗，手動拼湊字典
-            try:
-                creds_dict = json.loads(clean_str, strict=False)
-            except:
-                # 這裡直接填入您金鑰的關鍵資訊，確保連線
-                # 注意：private_key 必須從字串中擷取或還原
-                import re
-                pk_search = re.search(r"-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----", clean_str)
-                pk_content = pk_search.group(0).replace('\\n', '\n') if pk_search else ""
-                
-                creds_dict = {
-                    "type": "service_account",
-                    "project_id": "stockai-483605",
-                    "private_key_id": "4fb59840f128b6317f6b7d8f96993f089465790c",
-                    "private_key": pk_content,
-                    "client_email": "stockai@stockai-483605.iam.gserviceaccount.com",
-                    "token_uri": "[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)"
-                }
-        else:
-            creds_dict = raw_val
+        # 強力還原私鑰字串
+        clean_str = str(raw_val).strip().strip("'").strip('"')
+        clean_str = clean_str.replace('\\\\n', '\n').replace('\\n', '\n')
+        
+        # 使用正則提取私鑰內容，避開 JSON 解析器對 URL 的誤判
+        pk_search = re.search(r"-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----", clean_str)
+        if not pk_search:
+            raise ValueError("無法在 Secrets 中找到私鑰文字")
+        
+        pk_content = pk_search.group(0).replace('\\n', '\n')
+        
+        # 核心修正：手動建立純淨字典，直接寫死 Google API 網址
+        # 這樣就不會再出現 "No connection adapters found" 的 URL 報錯
+        creds_dict = {
+            "type": "service_account",
+            "project_id": "stockai-483605",
+            "private_key_id": "4fb59840f128b6317f6b7d8f96993f089465790c",
+            "private_key": pk_content,
+            "client_email": "stockai@stockai-483605.iam.gserviceaccount.com",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/stockai%40stockai-483605.iam.gserviceaccount.com"
+        }
 
-        # 授權與執行
+        # 執行授權
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
-        sh = client.open_by_url(st.secrets["connections"]["gsheets"]["spreadsheet"])
+        
+        # 獲取試算表網址並清洗
+        ss_url = st.secrets["connections"]["gsheets"]["spreadsheet"].strip().strip("'").strip('"')
+        sh = client.open_by_url(ss_url)
         ws = sh.worksheet("settings")
         
         for key, val in updates.items():
@@ -78,7 +77,7 @@ def sync_settings_to_sheets(updates):
             else:
                 ws.append_row([str(key), str(val)])
     except Exception as e:
-        st.error(f"試算表同步失敗 (V1.4): {e}")
+        st.error(f"試算表同步失敗 (V1.5): {e}")
 
         # 3. 執行授權
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
