@@ -23,11 +23,23 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+import json  # 確保檔案最上方有 import json
+
 # --- 2. Google Sheets 連線與自動回填引擎 ---
 def sync_settings_to_sheets(updates):
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds_dict = st.secrets["connections"]["gsheets"]["service_account"]
+        
+        # --- 關鍵修正區 ---
+        raw_creds = st.secrets["connections"]["gsheets"]["service_account"]
+        
+        # 防呆處理：如果讀到的是字串，就轉成字典
+        if isinstance(raw_creds, str):
+            creds_dict = json.loads(raw_creds)
+        else:
+            creds_dict = raw_creds
+        # -----------------
+
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         sh = client.open_by_url(st.secrets["connections"]["gsheets"]["spreadsheet"])
