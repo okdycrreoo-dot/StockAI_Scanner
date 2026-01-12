@@ -25,7 +25,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. Google Sheets 連線與自動回填引擎 (V1.5 純淨連線版) ---
+# --- 2. Google Sheets 連線與自動回填引擎 (V1.6 網址精準版) ---
 def sync_settings_to_sheets(updates):
     try:
         from datetime import datetime
@@ -33,42 +33,40 @@ def sync_settings_to_sheets(updates):
         import re
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         
-        # 獲取 Secrets
+        # 1. 提取並還原私鑰 (延用 V1.5 成功的邏輯)
         raw_val = st.secrets["connections"]["gsheets"]["service_account"]
-        
-        # 強力還原私鑰字串
         clean_str = str(raw_val).strip().strip("'").strip('"')
         clean_str = clean_str.replace('\\\\n', '\n').replace('\\n', '\n')
-        
-        # 使用正則提取私鑰內容，避開 JSON 解析器對 URL 的誤判
         pk_search = re.search(r"-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----", clean_str)
-        if not pk_search:
-            raise ValueError("無法在 Secrets 中找到私鑰文字")
+        pk_content = pk_search.group(0).replace('\\n', '\n') if pk_search else ""
         
-        pk_content = pk_search.group(0).replace('\\n', '\n')
-        
-        # 核心修正：手動建立純淨字典，直接寫死 Google API 網址
-        # 這樣就不會再出現 "No connection adapters found" 的 URL 報錯
         creds_dict = {
             "type": "service_account",
             "project_id": "stockai-483605",
             "private_key_id": "4fb59840f128b6317f6b7d8f96993f089465790c",
             "private_key": pk_content,
             "client_email": "stockai@stockai-483605.iam.gserviceaccount.com",
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/stockai%40stockai-483605.iam.gserviceaccount.com"
+            "token_uri": "https://oauth2.googleapis.com/token"
         }
 
-        # 執行授權
+        # 2. 授權
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         
-        # 獲取試算表網址並清洗
-        ss_url = st.secrets["connections"]["gsheets"]["spreadsheet"].strip().strip("'").strip('"')
+        # 3. 處理網址：移除所有空格、引號，確保網址純淨
+        raw_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+        ss_url = str(raw_url).strip().strip("'").strip('"').replace(" ", "")
+        
+        # 嘗試開啟試算表
         sh = client.open_by_url(ss_url)
-        ws = sh.worksheet("settings")
+        
+        # 4. 檢查並獲取工作表
+        try:
+            ws = sh.worksheet("settings")
+        except:
+            # 如果找不到 settings 分頁，就改抓第一個分頁
+            ws = sh.get_worksheet(0)
+            st.warning(f"找不到 'settings' 工作表，已自動切換至：{ws.title}")
         
         for key, val in updates.items():
             cell = ws.find(str(key))
@@ -76,23 +74,13 @@ def sync_settings_to_sheets(updates):
                 ws.update_cell(cell.row, 2, str(val))
             else:
                 ws.append_row([str(key), str(val)])
+                
     except Exception as e:
-        st.error(f"試算表同步失敗 (V1.5): {e}")
-
-        # 3. 執行授權
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-        client = gspread.authorize(creds)
-        sh = client.open_by_url(st.secrets["connections"]["gsheets"]["spreadsheet"])
-        ws = sh.worksheet("settings")
-        
-        for key, val in updates.items():
-            cell = ws.find(str(key))
-            if cell:
-                ws.update_cell(cell.row, 2, str(val))
-            else:
-                ws.append_row([str(key), str(val)])
-    except Exception as e:
-        st.error(f"試算表同步失敗 (V1.3): {e}")
+        # 如果還是 404，給予明確引導
+        if "404" in str(e) or "SpreadsheetNotFound" in str(e):
+            st.error("❌ 找不到試算表！請確認：1.網址正確 2.已分享給 stockai@stockai-483605.iam.gserviceaccount.com")
+        else:
+            st.error(f"試算表同步失敗 (V1.6): {e}")
 # --- 3. 自動抓取全市場台股 ---
 @st.cache_data(ttl=86400)
 def get_taiwan_stock_pool():
