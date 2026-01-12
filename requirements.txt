@@ -4,4 +4,6 @@ numpy
 yfinance
 gspread
 google-auth
-plotly
+requests
+lxml
+html5lib
