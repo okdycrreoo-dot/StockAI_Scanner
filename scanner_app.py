@@ -144,8 +144,11 @@ def main():
         bar = st.progress(0)
         status = st.empty()
         
+        # 在 main() 函數中的循環中加入延遲
         for i, sym in enumerate(pool[:limit]):
-            status.text(f"📡 掃描中 ({i+1}/{limit}): {sym}")
+            status.text(f"📡 正在掃描 ({i+1}/{limit}): {sym}")
+            # 這裡加入延遲，給 yfinance 一點喘息空間
+            time.sleep(1.2) 
             try:
                 data = yf.download(sym, period="6mo", interval="1d", progress=False)
                 if not data.empty and len(data) > 20:
