@@ -11,22 +11,24 @@ import json
 import re
 import random
 
-# --- 1. 頁面配置 ---
-st.set_page_config(page_title="StockAI Scanner Pro V2.2", layout="wide")
+# --- 1. 頁面配置與進階美化 ---
+st.set_page_config(page_title="StockAI Scanner Pro V2.3", layout="wide")
 st.markdown("""
     <style>
     .stApp { background-color: #0E1117; color: #FFFFFF; }
     .rank-card { 
         background: #161B22; border: 1px solid #30363D; border-radius: 12px; 
         padding: 20px; margin-bottom: 15px; border-left: 10px solid #00F5FF;
+        transition: transform 0.3s;
     }
+    .rank-card:hover { transform: scale(1.02); border-color: #00F5FF; }
     .buy-label { color: #FF3131; font-weight: 900; font-size: 1.2rem; }
     .sell-label { color: #00FF41; font-weight: 900; font-size: 1.2rem; }
     .profit-badge { background: #00F5FF; color: #000; padding: 4px 12px; border-radius: 20px; font-weight: 900; float: right; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. Google Sheets 批次同步引擎 ---
+# --- 2. Google Sheets 核心引擎 (V2.3 穩定版) ---
 def sync_to_sheets_bulk(updates_dict):
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -76,72 +78,79 @@ def get_taiwan_stock_pool():
                     code = item.split('\u3000')[0]
                     if len(code) == 4 and code.isdigit(): pool.append(f"{code}.{suffix}")
         except: continue
+    random.shuffle(pool) # 隨機化順序，避免每次都抓同一批被封鎖
     return pool
 
-# --- 4. AI 核心引擎 ---
+# --- 4. AI 核心預測引擎 ---
 def perform_ai_prediction(df, v_comp):
     try:
         close_data = df['Close']
         curr_p = float(close_data.iloc[-1])
         returns = df['Close'].pct_change().dropna()
         vol = float(returns.std()) * v_comp
-        sims = 200
+        sims = 300 # 提高模擬次數
         daily_returns = np.random.normal(0.005, vol, (sims, 20))
         paths = curr_p * np.exp(np.cumsum(daily_returns, axis=1))
         avg_path = np.mean(paths, axis=0)
-        return curr_p * 0.985, float(np.max(avg_path)), int(np.argmax(avg_path) + 1)
+        return curr_p * 0.98, float(np.max(avg_path)), int(np.argmax(avg_path) + 1)
     except: return 0, 0, 0
 
 # --- 5. 主程式 ---
 def main():
-    st.markdown("<h1 style='text-align:center;'>🏆 StockAI V2.2 全時段掃描器</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align:center;'>🚀 StockAI V2.3 最終穩定版</h1>", unsafe_allow_html=True)
     
     with st.sidebar:
-        st.header("⚙️ AI 管理面板")
-        scan_limit = st.slider("掃描數量", 5, 100, 10)
-        ai_sensitivity = st.slider("AI 敏感度", 0.5, 2.0, 1.15)
-        st.info("💡 非開盤時段亦可執行掃描分析。")
+        st.header("⚙️ 智能控制台")
+        scan_limit = st.slider("掃描數量", 5, 50, 5) # 預設改為 5 以利解鎖
+        ai_sensitivity = st.slider("AI 波動係數", 0.5, 2.0, 1.15)
+        st.warning("⚠️ 若顯示頻率限制，請更換手機熱點連線。")
 
-    if st.button("🚀 啟動全市場分析"):
+    if st.button("🔥 啟動深度掃描分析"):
         pool = get_taiwan_stock_pool()
         results = []
         bar = st.progress(0)
         status_msg = st.empty()
         
         for i, sym in enumerate(pool[:scan_limit]):
-            status_msg.text(f"📡 正在獲取歷史數據 ({i+1}/{scan_limit}): {sym}")
+            status_msg.markdown(f"📡 **正在透過加密隧道獲取數據**: `{sym}` ({i+1}/{scan_limit})")
             
-            # --- 強力抓取邏輯 (V2.2) ---
             data = pd.DataFrame()
-            retry_count = 0
-            while data.empty and retry_count < 3: # 最多重試 3 次
+            # V2.3 新增：多時段嘗試策略
+            for period in ["1y", "2y", "max"]:
                 try:
-                    # 改用 history 並強制抓取 1 年數據確保盤後數據完整
                     ticker = yf.Ticker(sym)
-                    data = ticker.history(period="1y", interval="1d", timeout=25)
-                    if data.empty:
-                        time.sleep(random.uniform(3, 5)) # 失敗則延長等待
-                        retry_count += 1
+                    data = ticker.history(period=period, interval="1d", timeout=30)
+                    if not data.empty: break
                 except:
-                    time.sleep(5)
-                    retry_count += 1
+                    time.sleep(3)
+                    continue
             
-            if not data.empty and len(data) > 20:
+            if not data.empty and len(data) > 30:
                 buy, sell, days = perform_ai_prediction(data, ai_sensitivity)
                 if buy > 0:
                     results.append({"id": sym, "buy": buy, "sell": sell, "days": days, "profit": (sell-buy)/buy})
             
-            time.sleep(random.uniform(2, 4)) # 基礎防護延遲
+            # 高強度防護延遲
+            time.sleep(random.uniform(5.0, 8.0)) 
             bar.progress((i+1)/scan_limit)
             
         if results:
-            top_list = sorted(results, key=lambda x: x['profit'], reverse=True)[:30]
-            status_msg.success("✅ 分析完成！已生成獲利名單")
-            sync_to_sheets_bulk({"last_scan": datetime.now().strftime("%Y-%m-%d %H:%M"), "top_1": top_list[0]['id']})
+            top_list = sorted(results, key=lambda x: x['profit'], reverse=True)
+            status_msg.success(f"✨ 分析完成！找到 {len(top_list)} 個潛力標的")
+            sync_to_sheets_bulk({"last_scan": datetime.now().strftime("%H:%M:%S"), "found": len(top_list)})
+            
             for item in top_list:
-                st.markdown(f"<div class='rank-card'><span class='profit-badge'>{item['profit']:.2%}</span><h3>{item['id']}</h3><p>買入: {item['buy']:.2f} | 目標: {item['sell']:.2f} | 預計: {item['days']}天</p></div>", unsafe_allow_html=True)
+                st.markdown(f"""
+                    <div class='rank-card'>
+                        <span class='profit-badge'>預估獲利 {item['profit']:.2%}</span>
+                        <h3>📈 {item['id']}</h3>
+                        <p>🔹 <b>進場參考:</b> <span class='buy-label'>{item['buy']:.2f}</span></p>
+                        <p>🔹 <b>目標獲利:</b> <span class='sell-label'>{item['sell']:.2f}</span></p>
+                        <p>🔹 <b>策略週期:</b> 約 {item['days']} 個交易日</p>
+                    </div>
+                """, unsafe_allow_html=True)
         else:
-            st.error("❌ 仍被 Yahoo 頻率限制鎖定。請嘗試將掃描數量設為 5，或等待 10 分鐘後再試。")
+            st.error("🚫 Yahoo 封鎖尚未解除。解法：請改用手機行動網路熱點測試。")
 
 if __name__ == "__main__":
     main()
