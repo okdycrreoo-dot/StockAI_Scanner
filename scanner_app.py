@@ -53,9 +53,9 @@ def sync_settings_to_sheets(updates):
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         
-        # 3. 處理網址：移除所有空格、引號，確保網址純淨
+        # 網址清洗強化：自動移除所有換行符與空格，確保網址恢復完整
         raw_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
-        ss_url = str(raw_url).strip().strip("'").strip('"').replace(" ", "")
+        ss_url = str(raw_url).replace('\n', '').replace('\r', '').replace(' ', '').strip().strip('"')
         
         # 嘗試開啟試算表
         sh = client.open_by_url(ss_url)
