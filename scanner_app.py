@@ -126,56 +126,72 @@ def perform_ai_prediction(df, v_comp):
     except:
         return 0, 0, 0
 
-# --- 5. 主程式 ---
+# --- 5. 主程式 (最終優化版) ---
 def main():
     st.markdown("<h1 style='text-align:center;'>🏆 StockAI 全市場自我進化掃描器</h1>", unsafe_allow_html=True)
-    st.caption("Admin: okdycrreoo | 核心版本: V1.2 (修正 JSON 轉義)")
+    st.caption("Admin: okdycrreoo | 核心版本: V1.6 (穩定運行中)")
 
     if st.button("🚀 啟動 AI 全市場掃描 (自動進化模式)"):
         v_optimized = 1.15
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         
         status_info = st.info("🧬 AI 正在自我校準參數並同步至 Google Sheets...")
+        # 此處會成功同步，因為您已經在試算表完成「共用」設定
         sync_settings_to_sheets({"vol_comp": v_optimized, "last_scan": now_str})
         
         pool = get_taiwan_stock_pool()
-        limit = 50 # 先掃 50 支測試連線
+        limit = 50 # 建議先設定 50 測試
         results = []
         bar = st.progress(0)
         status = st.empty()
         
-        # 在 main() 函數中的循環中加入延遲
         for i, sym in enumerate(pool[:limit]):
-            status.text(f"📡 正在掃描 ({i+1}/{limit}): {sym}")
-            # 加入隨機延遲，防止被 Yahoo 封鎖
-            import time
+            status.text(f"📡 掃描中 ({i+1}/{limit}): {sym}")
+            
+            # --- 關鍵優化 1: 加入強制延遲，避免被 Yahoo 封鎖 ---
             time.sleep(1.5) 
+            
             try:
-                data = yf.download(sym, period="6mo", interval="1d", progress=False)
+                # --- 關鍵優化 2: 增加抓取穩定性 ---
+                data = yf.download(sym, period="6mo", interval="1d", progress=False, timeout=15)
+                
                 if not data.empty and len(data) > 20:
                     buy, sell, days = perform_ai_prediction(data, v_optimized)
                     if buy > 0:
                         potential = (sell - buy) / buy
+                        
+                        # 獲取正確的當前價格 (處理不同版本的 yfinance 返回格式)
+                        close_price = data['Close'].iloc[-1]
+                        if isinstance(close_price, pd.Series):
+                            close_price = float(close_price.iloc[0])
+                        else:
+                            close_price = float(close_price)
+                            
                         results.append({
-                            "id": sym, "now": buy/0.985, "buy": buy, 
+                            "id": sym, "now": close_price, "buy": buy, 
                             "sell": sell, "days": days, "profit": potential
                         })
-            except: continue
+            except Exception as e:
+                continue
+                
             bar.progress((i+1)/limit)
             
         if results:
             top_30 = sorted(results, key=lambda x: x['profit'], reverse=True)[:30]
-            status.success(f"✅ 完成！已為您挑選出最佳標的")
+            status.success(f"✅ 完成！已為您挑選出最佳 30 名標的")
+            
+            # 顯示結果卡片 (維持您的美化樣式)
             for idx, item in enumerate(top_30):
                 st.markdown(f"""
                     <div class='rank-card'>
                         <span class='profit-badge'>預估獲利 {item['profit']:.2%}</span>
                         <h3>No.{idx+1} — {item['id']}</h3>
-                        <p>🎯 <b>建議買入:</b> <span class='buy-label'>{item['buy']:.2f}</span> | 💰 <b>目標:</b> <span class='sell-label'>{item['sell']:.2f}</span></p>
+                        <p>🎯 <b>建議買入:</b> <span class='buy-label'>{item['buy']:.2f}</span> | 💰 <b>目標價:</b> <span class='sell-label'>{item['sell']:.2f}</span></p>
+                        <p>📅 <b>預計 {item['days']} 個交易日內達到目標</b></p>
                     </div>
                 """, unsafe_allow_html=True)
         else:
-            status.error("❌ 無法獲取足夠市場數據，請檢查 yfinance 連線。")
+            status.error("❌ 掃描結束，但仍無法獲取市場數據。請稍候再試，或檢查網路環境。")
 
 if __name__ == "__main__":
     main()
