@@ -25,15 +25,13 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. Google Sheets 連線與自動回填引擎 (V1.6 網址精準版) ---
+# --- 2. Google Sheets 連線與自動回填引擎 (V1.8 終極穩定版) ---
 def sync_settings_to_sheets(updates):
     try:
         from datetime import datetime
-        import json
-        import re
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         
-        # 1. 提取並還原私鑰 (延用 V1.5 成功的邏輯)
+        # A. 提取金鑰
         raw_val = st.secrets["connections"]["gsheets"]["service_account"]
         clean_str = str(raw_val).strip().strip("'").strip('"')
         clean_str = clean_str.replace('\\\\n', '\n').replace('\\n', '\n')
@@ -49,24 +47,21 @@ def sync_settings_to_sheets(updates):
             "token_uri": "https://oauth2.googleapis.com/token"
         }
 
-        # 2. 授權
+        # B. 授權與網址縫合
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         
-        # 網址清洗強化：自動移除所有換行符與空格，確保網址恢復完整
+        # 強制縫合長網址：移除所有可能的換行與空格
         raw_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
-        ss_url = str(raw_url).replace('\n', '').replace('\r', '').replace(' ', '').strip().strip('"')
+        ss_url = str(raw_url).replace('\n', '').replace('\r', '').replace(' ', '').strip().strip('"').strip("'")
         
-        # 嘗試開啟試算表
         sh = client.open_by_url(ss_url)
         
-        # 4. 檢查並獲取工作表
+        # 自動匹配分頁：先找 settings，找不到就抓第一個
         try:
             ws = sh.worksheet("settings")
         except:
-            # 如果找不到 settings 分頁，就改抓第一個分頁
             ws = sh.get_worksheet(0)
-            st.warning(f"找不到 'settings' 工作表，已自動切換至：{ws.title}")
         
         for key, val in updates.items():
             cell = ws.find(str(key))
@@ -76,11 +71,8 @@ def sync_settings_to_sheets(updates):
                 ws.append_row([str(key), str(val)])
                 
     except Exception as e:
-        # 如果還是 404，給予明確引導
-        if "404" in str(e) or "SpreadsheetNotFound" in str(e):
-            st.error("❌ 找不到試算表！請確認：1.網址正確 2.已分享給 stockai@stockai-483605.iam.gserviceaccount.com")
-        else:
-            st.error(f"試算表同步失敗 (V1.6): {e}")
+        st.error(f"連線失敗 (V1.8): {e}")
+
 # --- 3. 自動抓取全市場台股 ---
 @st.cache_data(ttl=86400)
 def get_taiwan_stock_pool():
@@ -104,94 +96,67 @@ def get_taiwan_stock_pool():
 # --- 4. AI 核心引擎 ---
 def perform_ai_prediction(df, v_comp):
     try:
-        # yfinance 格式處理
         close_data = df['Close']
-        if isinstance(close_data, pd.DataFrame):
-            curr_p = float(close_data.iloc[-1].iloc[0])
-        else:
-            curr_p = float(close_data.iloc[-1])
-        
+        curr_p = float(close_data.iloc[-1])
         p_days = 20
         returns = df['Close'].pct_change().dropna()
         vol = float(returns.std()) * v_comp
-        
-        sims = 300 # 降低次數確保流暢
+        sims = 300
         daily_returns = np.random.normal(0.005, vol, (sims, p_days))
         paths = curr_p * np.exp(np.cumsum(daily_returns, axis=1))
-        
         avg_path = np.mean(paths, axis=0)
         best_idx = np.argmax(avg_path)
-        
         return curr_p * 0.985, float(avg_path[best_idx]), int(best_idx + 1)
     except:
         return 0, 0, 0
 
-# --- 5. 主程式 (最終優化版) ---
+# --- 5. 主程式 ---
 def main():
     st.markdown("<h1 style='text-align:center;'>🏆 StockAI 全市場自我進化掃描器</h1>", unsafe_allow_html=True)
-    st.caption("Admin: okdycrreoo | 核心版本: V1.6 (穩定運行中)")
+    st.caption("Admin: okdycrreoo | 核心版本: V1.8 (終極穩定版)")
 
     if st.button("🚀 啟動 AI 全市場掃描 (自動進化模式)"):
         v_optimized = 1.15
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         
         status_info = st.info("🧬 AI 正在自我校準參數並同步至 Google Sheets...")
-        # 此處會成功同步，因為您已經在試算表完成「共用」設定
         sync_settings_to_sheets({"vol_comp": v_optimized, "last_scan": now_str})
         
         pool = get_taiwan_stock_pool()
-        limit = 50 # 建議先設定 50 測試
+        limit = 30  # 設定為 30 支，確保穩定性
         results = []
         bar = st.progress(0)
         status = st.empty()
         
         for i, sym in enumerate(pool[:limit]):
             status.text(f"📡 掃描中 ({i+1}/{limit}): {sym}")
-            
-            # --- 關鍵優化 1: 加入強制延遲，避免被 Yahoo 封鎖 ---
-            time.sleep(1.5) 
-            
+            time.sleep(1.2) # 延遲防止 yfinance 封鎖
             try:
-                # --- 關鍵優化 2: 增加抓取穩定性 ---
-                data = yf.download(sym, period="6mo", interval="1d", progress=False, timeout=15)
-                
+                data = yf.download(sym, period="6mo", interval="1d", progress=False)
                 if not data.empty and len(data) > 20:
                     buy, sell, days = perform_ai_prediction(data, v_optimized)
                     if buy > 0:
                         potential = (sell - buy) / buy
-                        
-                        # 獲取正確的當前價格 (處理不同版本的 yfinance 返回格式)
-                        close_price = data['Close'].iloc[-1]
-                        if isinstance(close_price, pd.Series):
-                            close_price = float(close_price.iloc[0])
-                        else:
-                            close_price = float(close_price)
-                            
                         results.append({
-                            "id": sym, "now": close_price, "buy": buy, 
+                            "id": sym, "now": buy/0.985, "buy": buy, 
                             "sell": sell, "days": days, "profit": potential
                         })
-            except Exception as e:
-                continue
-                
+            except: continue
             bar.progress((i+1)/limit)
             
         if results:
             top_30 = sorted(results, key=lambda x: x['profit'], reverse=True)[:30]
-            status.success(f"✅ 完成！已為您挑選出最佳 30 名標的")
-            
-            # 顯示結果卡片 (維持您的美化樣式)
+            status.success(f"✅ 完成！已挑選出最佳潛力標的")
             for idx, item in enumerate(top_30):
                 st.markdown(f"""
                     <div class='rank-card'>
                         <span class='profit-badge'>預估獲利 {item['profit']:.2%}</span>
                         <h3>No.{idx+1} — {item['id']}</h3>
-                        <p>🎯 <b>建議買入:</b> <span class='buy-label'>{item['buy']:.2f}</span> | 💰 <b>目標價:</b> <span class='sell-label'>{item['sell']:.2f}</span></p>
-                        <p>📅 <b>預計 {item['days']} 個交易日內達到目標</b></p>
+                        <p>🎯 <b>建議買入:</b> <span class='buy-label'>{item['buy']:.2f}</span> | 💰 <b>目標:</b> <span class='sell-label'>{item['sell']:.2f}</span></p>
                     </div>
                 """, unsafe_allow_html=True)
         else:
-            status.error("❌ 掃描結束，但仍無法獲取市場數據。請稍候再試，或檢查網路環境。")
+            status.error("❌ 掃描完成但無數據，請確認市場是否開盤或 yfinance 狀態。")
 
 if __name__ == "__main__":
     main()
