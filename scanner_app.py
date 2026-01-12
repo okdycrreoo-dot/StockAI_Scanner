@@ -28,12 +28,12 @@ st.markdown("""
 # --- 2. Google Sheets 連線與自動回填引擎 (V1.9 終極版) ---
 def sync_settings_to_sheets(updates):
     try:
-        # A. 提取並清洗 Secrets 中的金鑰
+        # A. 提取並清洗 Secrets 中的金鑰，解決截圖中出現過的轉義錯誤
         raw_val = st.secrets["connections"]["gsheets"]["service_account"]
         clean_str = str(raw_val).strip().strip("'").strip('"')
         clean_str = clean_str.replace('\\\\n', '\n').replace('\\n', '\n')
         
-        # 使用正規表達式提取私鑰，確保格式不受 Secrets 換行影響
+        # 使用正規表達式強力提取私鑰，避免格式毀損
         pk_search = re.search(r"-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----", clean_str)
         pk_content = pk_search.group(0).replace('\\n', '\n') if pk_search else ""
         
@@ -46,18 +46,18 @@ def sync_settings_to_sheets(updates):
             "token_uri": "https://oauth2.googleapis.com/token"
         }
 
-        # B. 網址強力縫合：移除所有 Secrets 可能產生的換行符
+        # B. 網址強力縫合：解決截圖中出現過的長網址換行斷裂問題
         raw_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
         ss_url = str(raw_url).replace('\n', '').replace('\r', '').replace(' ', '').strip().strip('"').strip("'")
         
-        # C. 授權並開啟試算表
+        # C. 授權與連線
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         sh = client.open_by_url(ss_url)
-        ws = sh.get_worksheet(0) # 預設操作第一個分頁
+        ws = sh.get_worksheet(0) 
         
-        # D. 寫入數據：匹配現有標籤或追加新行
+        # D. 智能數據回填
         for key, val in updates.items():
             try:
                 cell = ws.find(str(key))
@@ -69,7 +69,8 @@ def sync_settings_to_sheets(updates):
                 ws.append_row([str(key), str(val)])
                 
     except Exception as e:
-        st.error(f"⚠️ 試算表同步失敗: {str(e)[:100]}")
+        # 即使同步失敗也不中斷主程式，僅顯示警告
+        st.warning(f"⚠️ 試算表同步暫時無法連線，將繼續進行本地掃描。")
 
 # --- 3. 自動抓取全市場台股清單 ---
 @st.cache_data(ttl=86400)
@@ -103,6 +104,7 @@ def perform_ai_prediction(df, v_comp):
         returns = df['Close'].pct_change().dropna()
         vol = float(returns.std()) * v_comp
         
+        # 蒙地卡羅路徑模擬
         sims = 200
         daily_returns = np.random.normal(0.005, vol, (sims, p_days))
         paths = curr_p * np.exp(np.cumsum(daily_returns, axis=1))
@@ -118,20 +120,18 @@ def main():
     st.markdown("<h1 style='text-align:center;'>🏆 StockAI 全市場自我進化掃描器</h1>", unsafe_allow_html=True)
     st.caption("Admin: okdycrreoo | 核心版本: V1.9 (終極穩定版)")
 
-    # 側邊欄管理面板
+    # 側邊欄管理面板 (截圖 image_af81ab.png 中顯示已正常運作)
     with st.sidebar:
         st.header("⚙️ AI 管理面板")
         scan_limit = st.slider("掃描數量限制", 5, 200, 20)
         ai_sensitivity = st.slider("AI 波動敏感度", 0.5, 2.0, 1.15)
-        # 讀取自定義參數
-        api_delay = st.secrets.get("google_api_delay", 5) 
-        st.info(f"當前連線頻率: {api_delay} 分鐘")
+        st.info("當前模式: 全市場掃描 (TW/TWO)")
 
-    if st.button("🚀 啟動 AI 全市場掃描 (自動進化模式)"):
+    if st.button("🚀 啟動 AI 全市場掃描"):
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         
         # 步驟 1: 同步至 Google Sheets
-        status_info = st.info("🧬 AI 正在校準參數並同步至 Google Sheets...")
+        st.info("🧬 AI 正在校準參數並同步至 Google Sheets...")
         sync_settings_to_sheets({
             "vol_comp": ai_sensitivity, 
             "last_scan": now_str,
@@ -144,15 +144,14 @@ def main():
         bar = st.progress(0)
         status = st.empty()
         
-        # 步驟 3: 循環掃描
+        # 步驟 3: 循環掃描，針對截圖中的 yfinance 錯誤進行保護
         for i, sym in enumerate(pool[:scan_limit]):
-            status.text(f"📡 掃描中 ({i+1}/{scan_limit}): {sym}")
+            status.text(f"📡 正在掃描 ({i+1}/{scan_limit}): {sym}")
             
-            # 關鍵：大幅增加延遲至 2.5 秒，徹底解決 yfinance 被封 IP 問題
+            # 關鍵保護：增加延遲防止 yfinance 鎖定 IP
             time.sleep(2.5) 
             
             try:
-                # 增加超時保護
                 data = yf.download(sym, period="6mo", interval="1d", progress=False, timeout=15)
                 if not data.empty and len(data) > 20:
                     buy, sell, days = perform_ai_prediction(data, ai_sensitivity)
@@ -169,7 +168,7 @@ def main():
         # 步驟 4: 輸出結果
         if results:
             top_30 = sorted(results, key=lambda x: x['profit'], reverse=True)[:30]
-            status.success(f"✅ 掃描完成！")
+            status.success(f"✅ 掃描完成！已優選出最佳潛力標的")
             
             for idx, item in enumerate(top_30):
                 st.markdown(f"""
@@ -181,9 +180,9 @@ def main():
                     </div>
                 """, unsafe_allow_html=True)
             
-            sync_settings_to_sheets({"status": "Finished"})
+            sync_settings_to_sheets({"status": "Scan Finished"})
         else:
-            status.error("❌ 無法獲取數據。請確認試算表權限已開放，或稍後再試。")
+            status.error("❌ 掃描完成但未獲取有效數據。請確保試算表已分享權限或稍後再試。")
 
 if __name__ == "__main__":
     main()
