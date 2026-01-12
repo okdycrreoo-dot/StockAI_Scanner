@@ -25,17 +25,15 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. Google Sheets 連線與自動回填引擎 (V1.9 高穩定版) ---
+# --- 2. Google Sheets 連線與自動回填引擎 (V1.9 終極版) ---
 def sync_settings_to_sheets(updates):
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        
-        # A. 提取並清洗 Secrets 中的金鑰內容
+        # A. 提取並清洗 Secrets 中的金鑰
         raw_val = st.secrets["connections"]["gsheets"]["service_account"]
         clean_str = str(raw_val).strip().strip("'").strip('"')
         clean_str = clean_str.replace('\\\\n', '\n').replace('\\n', '\n')
         
-        # 使用正規表達式精確抓取私鑰，防止字串損毀
+        # 使用正規表達式提取私鑰，確保格式不受 Secrets 換行影響
         pk_search = re.search(r"-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----", clean_str)
         pk_content = pk_search.group(0).replace('\\n', '\n') if pk_search else ""
         
@@ -48,18 +46,18 @@ def sync_settings_to_sheets(updates):
             "token_uri": "https://oauth2.googleapis.com/token"
         }
 
-        # B. 授權與網址強力縫合邏輯
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-        client = gspread.authorize(creds)
-        
-        # 解決網址過長被 Secrets 強制換行的問題
+        # B. 網址強力縫合：移除所有 Secrets 可能產生的換行符
         raw_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
         ss_url = str(raw_url).replace('\n', '').replace('\r', '').replace(' ', '').strip().strip('"').strip("'")
         
+        # C. 授權並開啟試算表
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+        client = gspread.authorize(creds)
         sh = client.open_by_url(ss_url)
-        ws = sh.get_worksheet(0) # 預設抓取第一個工作表
+        ws = sh.get_worksheet(0) # 預設操作第一個分頁
         
-        # C. 執行回填：自動匹配或追加數據
+        # D. 寫入數據：匹配現有標籤或追加新行
         for key, val in updates.items():
             try:
                 cell = ws.find(str(key))
@@ -73,7 +71,7 @@ def sync_settings_to_sheets(updates):
     except Exception as e:
         st.error(f"⚠️ 試算表同步失敗: {str(e)[:100]}")
 
-# --- 3. 自動抓取台股全市場標的 ---
+# --- 3. 自動抓取全市場台股清單 ---
 @st.cache_data(ttl=86400)
 def get_taiwan_stock_pool():
     urls = {
@@ -105,7 +103,6 @@ def perform_ai_prediction(df, v_comp):
         returns = df['Close'].pct_change().dropna()
         vol = float(returns.std()) * v_comp
         
-        # 簡單蒙地卡羅模擬
         sims = 200
         daily_returns = np.random.normal(0.005, vol, (sims, p_days))
         paths = curr_p * np.exp(np.cumsum(daily_returns, axis=1))
@@ -121,17 +118,19 @@ def main():
     st.markdown("<h1 style='text-align:center;'>🏆 StockAI 全市場自我進化掃描器</h1>", unsafe_allow_html=True)
     st.caption("Admin: okdycrreoo | 核心版本: V1.9 (終極穩定版)")
 
-    # 側邊欄參數設定 (由管理員 okdycrreoo 控制)
+    # 側邊欄管理面板
     with st.sidebar:
         st.header("⚙️ AI 管理面板")
-        scan_limit = st.slider("掃描數量限制", 5, 100, 20)
+        scan_limit = st.slider("掃描數量限制", 5, 200, 20)
         ai_sensitivity = st.slider("AI 波動敏感度", 0.5, 2.0, 1.15)
-        st.info(f"當前連線頻率: {st.secrets.get('google_api_delay', 5)} 分鐘")
+        # 讀取自定義參數
+        api_delay = st.secrets.get("google_api_delay", 5) 
+        st.info(f"當前連線頻率: {api_delay} 分鐘")
 
     if st.button("🚀 啟動 AI 全市場掃描 (自動進化模式)"):
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         
-        # 第一步：同步參數至試算表
+        # 步驟 1: 同步至 Google Sheets
         status_info = st.info("🧬 AI 正在校準參數並同步至 Google Sheets...")
         sync_settings_to_sheets({
             "vol_comp": ai_sensitivity, 
@@ -139,40 +138,38 @@ def main():
             "status": "Running"
         })
         
-        # 第二步：獲取股票清單
+        # 步驟 2: 獲取代碼清單
         pool = get_taiwan_stock_pool()
         results = []
         bar = st.progress(0)
         status = st.empty()
         
-        # 第三步：開始掃描
+        # 步驟 3: 循環掃描
         for i, sym in enumerate(pool[:scan_limit]):
             status.text(f"📡 掃描中 ({i+1}/{scan_limit}): {sym}")
             
-            # 關鍵：加入延遲保護 yfinance IP 不被封鎖
-            time.sleep(2.0) 
+            # 關鍵：大幅增加延遲至 2.5 秒，徹底解決 yfinance 被封 IP 問題
+            time.sleep(2.5) 
             
             try:
-                data = yf.download(sym, period="6mo", interval="1d", progress=False)
+                # 增加超時保護
+                data = yf.download(sym, period="6mo", interval="1d", progress=False, timeout=15)
                 if not data.empty and len(data) > 20:
                     buy, sell, days = perform_ai_prediction(data, ai_sensitivity)
                     if buy > 0:
                         potential = (sell - buy) / buy
                         results.append({
-                            "id": sym, 
-                            "buy": buy, 
-                            "sell": sell, 
-                            "days": days, 
-                            "profit": potential
+                            "id": sym, "buy": buy, "sell": sell, 
+                            "days": days, "profit": potential
                         })
             except:
                 continue
             bar.progress((i+1)/scan_limit)
             
-        # 第四步：顯示結果
+        # 步驟 4: 輸出結果
         if results:
             top_30 = sorted(results, key=lambda x: x['profit'], reverse=True)[:30]
-            status.success(f"✅ 掃描完成！已優選出最佳標的")
+            status.success(f"✅ 掃描完成！")
             
             for idx, item in enumerate(top_30):
                 st.markdown(f"""
@@ -184,10 +181,9 @@ def main():
                     </div>
                 """, unsafe_allow_html=True)
             
-            # 更新結束狀態至 Sheets
             sync_settings_to_sheets({"status": "Finished"})
         else:
-            status.error("❌ 無法獲取市場數據，請檢查網路或稍後再試。")
+            status.error("❌ 無法獲取數據。請確認試算表權限已開放，或稍後再試。")
 
 if __name__ == "__main__":
     main()
