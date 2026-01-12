@@ -49,6 +49,7 @@ def sync_settings_to_sheets(updates):
         # B. 網址強力縫合：解決截圖中出現過的長網址換行斷裂問題
         raw_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
         ss_url = str(raw_url).replace('\n', '').replace('\r', '').replace(' ', '').strip().strip('"').strip("'")
+        sh = client.open_by_url(ss_url)
         
         # C. 授權與連線
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
