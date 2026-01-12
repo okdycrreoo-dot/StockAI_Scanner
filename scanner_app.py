@@ -25,47 +25,7 @@ st.markdown("""
 
 import json  # 確保檔案最上方有 import json
 
-# --- 2. Google Sheets 連線與自動回填引擎 ---
-def sync_settings_to_sheets(updates):
-    try:
-        import json
-        import re
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        
-        # --- 核心防呆：處理多種格式的 Secrets ---
-        raw_creds = st.secrets["connections"]["gsheets"]["service_account"]
-        
-        if isinstance(raw_creds, str):
-            # 1. 移除可能導致錯誤的換行符號
-            # 2. 處理 JSON 中的轉義斜線
-            clean_creds = raw_creds.strip()
-            if clean_creds.startswith("'") or clean_creds.startswith('"'):
-                clean_creds = clean_creds[1:-1]
-            
-            # 強制將文字中的 \n 轉換為真正的換行符號
-            try:
-                creds_dict = json.loads(clean_creds, strict=False)
-            except json.JSONDecodeError:
-                # 如果還是失敗，嘗試更激進的換行符替換
-                fixed_json = clean_creds.replace("\\n", "\n")
-                creds_dict = json.loads(fixed_json, strict=False)
-        else:
-            creds_dict = raw_creds
-        # ------------------------------------
 
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-        client = gspread.authorize(creds)
-        sh = client.open_by_url(st.secrets["connections"]["gsheets"]["spreadsheet"])
-        ws = sh.worksheet("settings")
-        
-        for key, val in updates.items():
-            cell = ws.find(key)
-            if cell:
-                ws.update_cell(cell.row, 2, str(val))
-            else:
-                ws.append_row([key, str(val)])
-    except Exception as e:
-        st.error(f"試算表同步失敗: {e}")
 
 # --- 3. 自動抓取全市場台股 (1700+) ---
 @st.cache_data(ttl=86400)
