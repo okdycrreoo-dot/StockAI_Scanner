@@ -9,9 +9,10 @@ from datetime import datetime
 import time
 import json
 import re
+import random
 
 # --- 1. 頁面配置與視覺美化 ---
-st.set_page_config(page_title="StockAI Scanner Pro V2.0", layout="wide")
+st.set_page_config(page_title="StockAI Scanner Pro V2.1", layout="wide")
 st.markdown("""
     <style>
     .stApp { background-color: #0E1117; color: #FFFFFF; }
@@ -25,15 +26,12 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. Google Sheets 批次同步引擎 (V2.0 優化版) ---
+# --- 2. Google Sheets 批次同步引擎 (V2.1 穩定版) ---
 def sync_to_sheets_bulk(updates_dict):
-    """
-    接收一個字典，一次性執行所有寫入動作，減少 API 請求次數
-    """
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         
-        # A. 金鑰清洗與轉義處理
+        # A. 金鑰轉義處理
         raw_val = st.secrets["connections"]["gsheets"]["service_account"]
         clean_str = str(raw_val).strip().strip("'").strip('"')
         clean_str = clean_str.replace('\\\\n', '\n').replace('\\n', '\n')
@@ -58,8 +56,7 @@ def sync_to_sheets_bulk(updates_dict):
         sh = client.open_by_url(ss_url)
         ws = sh.get_worksheet(0)
         
-        # C. 批次寫入：避免多次迴圈呼叫 API
-        # 這裡會先找出現有的所有資料，並在本地比對，減少通訊次數
+        # C. 批次比對與更新 (減少 API 負擔)
         all_data = ws.get_all_values()
         existing_keys = {row[0]: i+1 for i, row in enumerate(all_data) if row}
 
@@ -70,7 +67,7 @@ def sync_to_sheets_bulk(updates_dict):
                 ws.append_row([str(key), str(val)])
                 
     except Exception as e:
-        st.error(f"⚠️ 雲端同步失敗: {str(e)[:50]}")
+        st.warning(f"⚠️ 雲端同步暫時受阻，將於下次掃描重試。")
 
 # --- 3. 自動抓取全市場台股清單 ---
 @st.cache_data(ttl=86400)
@@ -111,8 +108,8 @@ def perform_ai_prediction(df, v_comp):
 
 # --- 5. 主程式 ---
 def main():
-    st.markdown("<h1 style='text-align:center;'>🏆 StockAI V2.0 批次強化掃描器</h1>", unsafe_allow_html=True)
-    st.caption("Admin: okdycrreoo | 核心版本: V2.0 (批次寫入優化版)")
+    st.markdown("<h1 style='text-align:center;'>🏆 StockAI V2.1 穩定通訊版</h1>", unsafe_allow_html=True)
+    st.caption("Admin: okdycrreoo | 核心版本: V2.1 (數據抓取加固)")
 
     with st.sidebar:
         st.header("⚙️ AI 管理面板")
@@ -120,22 +117,25 @@ def main():
         ai_sensitivity = st.slider("AI 波動敏感度", 0.5, 2.0, 1.15)
         st.info(f"當前連線頻率設定: {st.secrets.get('google_api_delay', 5)} 分鐘")
 
-    if st.button("🚀 啟動全市場批次掃描"):
+    if st.button("🚀 啟動全市場深度掃描"):
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-        
-        # 初始化數據集 (只在本地記憶體運作)
         pool = get_taiwan_stock_pool()
         results = []
         bar = st.progress(0)
         status_msg = st.empty()
         
-        # 開始掃描
+        # --- 掃描核心邏輯 (V2.1 優化) ---
         for i, sym in enumerate(pool[:scan_limit]):
-            status_msg.text(f"📡 深度掃描中 ({i+1}/{scan_limit}): {sym}")
-            time.sleep(2.5) # 保護 yfinance 頻率
+            status_msg.text(f"📡 掃描中 ({i+1}/{scan_limit}): {sym}")
+            
+            # 關鍵：模擬真人隨機延遲，防止 IP 封鎖
+            time.sleep(random.uniform(2.5, 4.0)) 
             
             try:
-                data = yf.download(sym, period="6mo", interval="1d", progress=False, timeout=15)
+                # 使用輕量化抓取方式並增加超時保護
+                ticker = yf.Ticker(sym)
+                data = ticker.history(period="6mo", interval="1d", timeout=20)
+                
                 if not data.empty and len(data) > 20:
                     buy, sell, days = perform_ai_prediction(data, ai_sensitivity)
                     if buy > 0:
@@ -146,23 +146,20 @@ def main():
             except: continue
             bar.progress((i+1)/scan_limit)
             
-        # 掃描完成後的批次處理
+        # --- 批次處理與顯示 ---
         if results:
             top_30 = sorted(results, key=lambda x: x['profit'], reverse=True)[:30]
-            status_msg.success(f"✅ 掃描完成！正在執行一次性雲端同步...")
+            status_msg.success(f"✅ 掃描完成！正在同步雲端資料...")
             
-            # 打包所有數據，只呼叫一次 API
+            # 打包摘要數據至試算表
             bulk_data = {
                 "last_scan_time": now_str,
-                "scan_count": scan_limit,
-                "ai_sensitivity": ai_sensitivity,
-                "top_1_id": top_30[0]['id'] if len(top_30) > 0 else "None",
-                "top_1_profit": f"{top_30[0]['profit']:.2%}" if len(top_30) > 0 else "0%",
+                "top_1_id": top_30[0]['id'],
+                "top_1_profit": f"{top_30[0]['profit']:.2%}",
                 "status": "Success"
             }
             sync_to_sheets_bulk(bulk_data)
             
-            # 前端顯示
             for idx, item in enumerate(top_30):
                 st.markdown(f"""
                     <div class='rank-card'>
@@ -173,7 +170,7 @@ def main():
                     </div>
                 """, unsafe_allow_html=True)
         else:
-            st.error("❌ 掃描結束但無有效數據，請檢查網路環境。")
+            st.error("❌ 仍無法獲取市場數據。建議：1. 將掃描限制設為 5 再試一次；2. 確認當前是否為開盤時段。")
 
 if __name__ == "__main__":
     main()
