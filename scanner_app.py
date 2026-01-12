@@ -25,36 +25,47 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. Google Sheets 連線與自動回填引擎 (核心強化版) ---
+# --- 2. Google Sheets 連線與自動回填引擎 (V1.3 手動還原版) ---
 def sync_settings_to_sheets(updates):
     try:
         from datetime import datetime
+        import json
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         
-        # 獲取 Secrets
+        # 1. 獲取原始數據
         raw_data = st.secrets["connections"]["gsheets"]["service_account"]
         
+        # 2. 如果是字串，先進行「深度去轉義」
         if isinstance(raw_data, str):
-            # --- 終極字串清洗邏輯 ---
-            # 移除所有前後空格與外層多餘引號
-            clean_data = raw_data.strip()
-            if (clean_data.startswith("'") and clean_data.endswith("'")) or (clean_data.startswith('"') and clean_data.endswith('"')):
-                clean_data = clean_data[1:-1]
+            # 移除外層可能存在的引號與前後空格
+            clean_str = raw_data.strip().strip("'").strip('"')
+            # 關鍵：強制處理所有重複轉義的斜線，將 \\\\n 或 \\n 全部變回標準換行
+            clean_str = clean_str.replace('\\\\n', '\n').replace('\\n', '\n')
             
-            # 處理轉義斜線問題：將雙斜線變回單斜線，再將 \n 轉為真正的換行
-            clean_data = clean_data.replace('\\\\n', '\\n')
-            clean_data = clean_data.replace('\\n', '\n')
-            
-            # 使用 json.loads 解析，若失敗則嘗試修正常見轉義錯誤
+            # 嘗試解析，如果還是 Invalid escape，代表 JSON 內部格式損毀，直接用正則提取
             try:
-                creds_dict = json.loads(clean_data, strict=False)
+                creds_dict = json.loads(clean_str, strict=False)
             except:
-                # 備用方案：如果 JSON 格式嚴重毀損，手動修復關鍵換行
-                clean_data = re.sub(r'\\+', r'\\', clean_data)
-                creds_dict = json.loads(clean_data, strict=False)
+                # 備用方案：手動用 Regex 提取私鑰 (這是最穩的方法)
+                import re
+                pk_match = re.search(r'\"private_key\":\s*\"(.*?)\"', clean_str)
+                if pk_match:
+                    pk = pk_match.group(1).replace('\\n', '\n')
+                    # 建立手動字典 (請確保其他欄位與您 JSON 一致)
+                    creds_dict = {
+                        "type": "service_account",
+                        "project_id": "stockai-483605",
+                        "private_key_id": "4fb59840f128b6317f6b7d8f96993f089465790c",
+                        "private_key": pk,
+                        "client_email": "stockai@stockai-483605.iam.gserviceaccount.com",
+                        "token_uri": "https://oauth2.googleapis.com/token"
+                    }
+                else:
+                    raise ValueError("無法從 Secrets 中提取有效的私鑰格式")
         else:
             creds_dict = raw_data
 
+        # 3. 執行授權
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         sh = client.open_by_url(st.secrets["connections"]["gsheets"]["spreadsheet"])
@@ -67,8 +78,7 @@ def sync_settings_to_sheets(updates):
             else:
                 ws.append_row([str(key), str(val)])
     except Exception as e:
-        st.error(f"試算表同步失敗: {e}")
-
+        st.error(f"試算表同步失敗 (V1.3): {e}")
 # --- 3. 自動抓取全市場台股 ---
 @st.cache_data(ttl=86400)
 def get_taiwan_stock_pool():
