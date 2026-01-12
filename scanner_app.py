@@ -25,45 +25,60 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. Google Sheets 連線與自動回填引擎 (V1.3 手動還原版) ---
+# --- 2. Google Sheets 連線與自動回填引擎 (V1.4 手動精準對接版) ---
 def sync_settings_to_sheets(updates):
     try:
         from datetime import datetime
         import json
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         
-        # 1. 獲取原始數據
-        raw_data = st.secrets["connections"]["gsheets"]["service_account"]
+        # 直接獲取原始字串並強力清洗換行符號
+        raw_val = st.secrets["connections"]["gsheets"]["service_account"]
         
-        # 2. 如果是字串，先進行「深度去轉義」
-        if isinstance(raw_data, str):
-            # 移除外層可能存在的引號與前後空格
-            clean_str = raw_data.strip().strip("'").strip('"')
-            # 關鍵：強制處理所有重複轉義的斜線，將 \\\\n 或 \\n 全部變回標準換行
+        # 如果 Secrets 是一串文字，我們用最暴力的方式還原 private_key
+        if isinstance(raw_val, str):
+            # 1. 移除前後所有可能的包裹符號
+            clean_str = raw_val.strip().strip("'").strip('"').strip('```')
+            
+            # 2. 針對私鑰進行還原：將所有轉義的斜線換行 (\n 或 \\n) 統一還原
+            # 這是為了解決截圖中顯示的 Invalid \escape 報錯
             clean_str = clean_str.replace('\\\\n', '\n').replace('\\n', '\n')
             
-            # 嘗試解析，如果還是 Invalid escape，代表 JSON 內部格式損毀，直接用正則提取
+            # 3. 如果連 json.loads 都失敗，手動拼湊字典
             try:
                 creds_dict = json.loads(clean_str, strict=False)
             except:
-                # 備用方案：手動用 Regex 提取私鑰 (這是最穩的方法)
+                # 這裡直接填入您金鑰的關鍵資訊，確保連線
+                # 注意：private_key 必須從字串中擷取或還原
                 import re
-                pk_match = re.search(r'\"private_key\":\s*\"(.*?)\"', clean_str)
-                if pk_match:
-                    pk = pk_match.group(1).replace('\\n', '\n')
-                    # 建立手動字典 (請確保其他欄位與您 JSON 一致)
-                    creds_dict = {
-                        "type": "service_account",
-                        "project_id": "stockai-483605",
-                        "private_key_id": "4fb59840f128b6317f6b7d8f96993f089465790c",
-                        "private_key": pk,
-                        "client_email": "stockai@stockai-483605.iam.gserviceaccount.com",
-                        "token_uri": "https://oauth2.googleapis.com/token"
-                    }
-                else:
-                    raise ValueError("無法從 Secrets 中提取有效的私鑰格式")
+                pk_search = re.search(r"-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----", clean_str)
+                pk_content = pk_search.group(0).replace('\\n', '\n') if pk_search else ""
+                
+                creds_dict = {
+                    "type": "service_account",
+                    "project_id": "stockai-483605",
+                    "private_key_id": "4fb59840f128b6317f6b7d8f96993f089465790c",
+                    "private_key": pk_content,
+                    "client_email": "stockai@stockai-483605.iam.gserviceaccount.com",
+                    "token_uri": "[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)"
+                }
         else:
-            creds_dict = raw_data
+            creds_dict = raw_val
+
+        # 授權與執行
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+        client = gspread.authorize(creds)
+        sh = client.open_by_url(st.secrets["connections"]["gsheets"]["spreadsheet"])
+        ws = sh.worksheet("settings")
+        
+        for key, val in updates.items():
+            cell = ws.find(str(key))
+            if cell:
+                ws.update_cell(cell.row, 2, str(val))
+            else:
+                ws.append_row([str(key), str(val)])
+    except Exception as e:
+        st.error(f"試算表同步失敗 (V1.4): {e}")
 
         # 3. 執行授權
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
