@@ -1,156 +1,109 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
 import yfinance as yf
-import requests
-import gspread
-from google.oauth2.service_account import Credentials
-from datetime import datetime
-import time
-import json
-import re
-import random
+import google.generativeai as genai
 
-# --- 1. 頁面配置與進階美化 ---
-st.set_page_config(page_title="StockAI Scanner Pro V2.3", layout="wide")
-st.markdown("""
-    <style>
-    .stApp { background-color: #0E1117; color: #FFFFFF; }
-    .rank-card { 
-        background: #161B22; border: 1px solid #30363D; border-radius: 12px; 
-        padding: 20px; margin-bottom: 15px; border-left: 10px solid #00F5FF;
-        transition: transform 0.3s;
-    }
-    .rank-card:hover { transform: scale(1.02); border-color: #00F5FF; }
-    .buy-label { color: #FF3131; font-weight: 900; font-size: 1.2rem; }
-    .sell-label { color: #00FF41; font-weight: 900; font-size: 1.2rem; }
-    .profit-badge { background: #00F5FF; color: #000; padding: 4px 12px; border-radius: 20px; font-weight: 900; float: right; }
-    </style>
-    """, unsafe_allow_html=True)
+# --- 1. AI 配置區 ---
+# 請在此輸入您的 Gemini API Key (建議使用環境變數或 Streamlit secrets)
+GEMINI_API_KEY = "您的_GEMINI_API_KEY" 
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash') # 或使用 gemini-1.5-pro 獲得更深度的分析
 
-# --- 2. Google Sheets 核心引擎 (V2.3 穩定版) ---
-def sync_to_sheets_bulk(updates_dict):
-    try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        raw_val = st.secrets["connections"]["gsheets"]["service_account"]
-        clean_str = str(raw_val).strip().strip("'").strip('"').replace('\\\\n', '\n').replace('\\n', '\n')
-        pk_search = re.search(r"-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----", clean_str)
-        pk_content = pk_search.group(0).replace('\\n', '\n') if pk_search else ""
-        
-        creds_dict = {
-            "type": "service_account",
-            "project_id": "stockai-483605",
-            "private_key_id": "4fb59840f128b6317f6b7d8f96993f089465790c",
-            "private_key": pk_content,
-            "client_email": "stockai@stockai-483605.iam.gserviceaccount.com",
-            "token_uri": "https://oauth2.googleapis.com/token"
-        }
-        raw_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
-        ss_url = str(raw_url).replace('\n', '').replace('\r', '').replace(' ', '').strip().strip('"').strip("'")
-        
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-        client = gspread.authorize(creds)
-        sh = client.open_by_url(ss_url)
-        ws = sh.get_worksheet(0)
-        
-        all_data = ws.get_all_values()
-        existing_keys = {row[0]: i+1 for i, row in enumerate(all_data) if row}
-        for key, val in updates_dict.items():
-            if key in existing_keys:
-                ws.update_cell(existing_keys[key], 2, str(val))
-            else:
-                ws.append_row([str(key), str(val)])
-    except: pass
+# --- 2. 核心功能函數 ---
+def get_stock_data(symbol):
+    """判斷市場並抓取數據"""
+    for suffix in [".TW", ".TWO"]:
+        ticker_str = f"{symbol}{suffix}"
+        data = yf.Ticker(ticker_str)
+        info = data.info
+        if info and 'regularMarketPrice' in info:
+            return data, info, ticker_str
+    return None, None, None
 
-# --- 3. 自動抓取清單 ---
-@st.cache_data(ttl=86400)
-def get_taiwan_stock_pool():
-    urls = {"TW": "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", "TWO": "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"}
-    pool = []
-    for suffix, url in urls.items():
-        try:
-            res = requests.get(url, timeout=10)
-            dfs = pd.read_html(res.text)
-            df = dfs[0]
-            df.columns = df.iloc[0]
-            for item in df.iloc[1:]['有價證券代號及名稱']:
-                if isinstance(item, str) and '\u3000' in item:
-                    code = item.split('\u3000')[0]
-                    if len(code) == 4 and code.isdigit(): pool.append(f"{code}.{suffix}")
-        except: continue
-    random.shuffle(pool) # 隨機化順序，避免每次都抓同一批被封鎖
-    return pool
+# --- 3. Streamlit UI 介面 ---
+st.set_page_config(page_title="StockAI Scanner", layout="wide")
+st.title("🤖 Gemini 股票深度診斷系統")
 
-# --- 4. AI 核心預測引擎 ---
-def perform_ai_prediction(df, v_comp):
-    try:
-        close_data = df['Close']
-        curr_p = float(close_data.iloc[-1])
-        returns = df['Close'].pct_change().dropna()
-        vol = float(returns.std()) * v_comp
-        sims = 300 # 提高模擬次數
-        daily_returns = np.random.normal(0.005, vol, (sims, 20))
-        paths = curr_p * np.exp(np.cumsum(daily_returns, axis=1))
-        avg_path = np.mean(paths, axis=0)
-        return curr_p * 0.98, float(np.max(avg_path)), int(np.argmax(avg_path) + 1)
-    except: return 0, 0, 0
+stock_code = st.text_input("請輸入股票前4碼代號", max_chars=4, placeholder="例如: 2330")
 
-# --- 5. 主程式 ---
-def main():
-    st.markdown("<h1 style='text-align:center;'>🚀 StockAI V2.3 最終穩定版</h1>", unsafe_allow_html=True)
+if stock_code:
+    ticker_obj, info, full_symbol = get_stock_data(stock_code)
     
-    with st.sidebar:
-        st.header("⚙️ 智能控制台")
-        scan_limit = st.slider("掃描數量", 5, 50, 5) # 預設改為 5 以利解鎖
-        ai_sensitivity = st.slider("AI 波動係數", 0.5, 2.0, 1.15)
-        st.warning("⚠️ 若顯示頻率限制，請更換手機熱點連線。")
-
-    if st.button("🔥 啟動深度掃描分析"):
-        pool = get_taiwan_stock_pool()
-        results = []
-        bar = st.progress(0)
-        status_msg = st.empty()
+    if info:
+        # 顯示基本數值
+        st.subheader(f"📊 {info.get('longName')} ({full_symbol}) 基本面")
+        c1, c2, c3, c4 = st.columns(4)
+        price = info.get('regularMarketPrice', 'N/A')
+        pe = info.get('trailingPE', 'N/A')
+        nav = info.get('bookValue', 'N/A')
+        pb = info.get('priceToBook', 'N/A')
         
-        for i, sym in enumerate(pool[:scan_limit]):
-            status_msg.markdown(f"📡 **正在透過加密隧道獲取數據**: `{sym}` ({i+1}/{scan_limit})")
-            
-            data = pd.DataFrame()
-            # V2.3 新增：多時段嘗試策略
-            for period in ["1y", "2y", "max"]:
-                try:
-                    ticker = yf.Ticker(sym)
-                    data = ticker.history(period=period, interval="1d", timeout=30)
-                    if not data.empty: break
-                except:
-                    time.sleep(3)
-                    continue
-            
-            if not data.empty and len(data) > 30:
-                buy, sell, days = perform_ai_prediction(data, ai_sensitivity)
-                if buy > 0:
-                    results.append({"id": sym, "buy": buy, "sell": sell, "days": days, "profit": (sell-buy)/buy})
-            
-            # 高強度防護延遲
-            time.sleep(random.uniform(5.0, 8.0)) 
-            bar.progress((i+1)/scan_limit)
-            
-        if results:
-            top_list = sorted(results, key=lambda x: x['profit'], reverse=True)
-            status_msg.success(f"✨ 分析完成！找到 {len(top_list)} 個潛力標的")
-            sync_to_sheets_bulk({"last_scan": datetime.now().strftime("%H:%M:%S"), "found": len(top_list)})
-            
-            for item in top_list:
-                st.markdown(f"""
-                    <div class='rank-card'>
-                        <span class='profit-badge'>預估獲利 {item['profit']:.2%}</span>
-                        <h3>📈 {item['id']}</h3>
-                        <p>🔹 <b>進場參考:</b> <span class='buy-label'>{item['buy']:.2f}</span></p>
-                        <p>🔹 <b>目標獲利:</b> <span class='sell-label'>{item['sell']:.2f}</span></p>
-                        <p>🔹 <b>策略週期:</b> 約 {item['days']} 個交易日</p>
-                    </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.error("🚫 Yahoo 封鎖尚未解除。解法：請改用手機行動網路熱點測試。")
+        c1.metric("今日收盤", price)
+        c2.metric("本益比 (PE)", pe)
+        c3.metric("每股淨值 (NAV)", nav)
+        c4.metric("股價淨值比 (PB)", pb)
 
-if __name__ == "__main__":
-    main()
+        # 技術指標輸入表單
+        st.subheader("🧪 技術指標數據輸入")
+        with st.form("tech_data"):
+            t1, t2, t3 = st.columns(3)
+            with t1:
+                vol_5 = st.number_input("5日平均 VOL", value=0.0)
+                macd_dif = st.number_input("MACD DIF (12-26)", value=0.0)
+                rsi_5 = st.number_input("RSI 5日平均", value=0.0)
+                di_plus = st.number_input("DMI +DI14", value=0.0)
+                di_minus = st.number_input("DMI -DI14", value=0.0)
+                k_val = st.number_input("KDJ-K", value=0.0)
+                d_val = st.number_input("KDJ-D", value=0.0)
+                j_val = st.number_input("KDJ-J", value=0.0)
+            with t2:
+                bias_5 = st.number_input("BIAS 5日平均", value=0.0)
+                psy_12 = st.number_input("PSY 12日平均", value=0.0)
+                obv = st.number_input("OBV 值", value=0.0)
+                bbi = st.number_input("BBI 值", value=0.0)
+                cci_3 = st.number_input("CCI 3日平均", value=0.0)
+                mtm_10 = st.number_input("MTM 10日平均", value=0.0)
+                roc_12 = st.number_input("ROC 12日平均", value=0.0)
+            with t3:
+                wc_val = st.number_input("WC 值", value=0.0)
+                ad_val = st.number_input("AD 值", value=0.0)
+                ar_13 = st.number_input("AR 13日平均", value=0.0)
+                br_13 = st.number_input("BR 13日平均", value=0.0)
+                vr_13 = st.number_input("VR 13日平均", value=0.0)
+                eom_14 = st.number_input("14EOM", value=0.0)
+                nvi = st.number_input("NVI", value=0.0)
+                pvi = st.number_input("PVI", value=0.0)
+                vao = st.number_input("VAO", value=0.0)
+            
+            submit = st.form_submit_button("🚀 發送給 Gemini 進行深度診斷")
+
+        if submit:
+            # --- 4. 構造 AI Prompt ---
+            prompt = f"""
+            你是一位專業的股市分析師。請根據以下數據，為股票 {info.get('longName')} ({full_symbol}) 提供詳細診斷報告。
+            
+            【基本面數據】
+            - 現價: {price}, 本益比: {pe}, 每股淨值: {nav}, 股價淨值比: {pb}
+            
+            【技術指標數據】
+            - 量價能量: 5日均量:{vol_5}, OBV:{obv}, VR(13):{vr_13}, VAO:{vao}
+            - 動能/震盪: MACD DIF:{macd_dif}, RSI(5):{rsi_5}, KDJ:{k_val}/{d_val}/{j_val}, CCI(3):{cci_3}, ROC(12):{roc_12}, MTM(10):{mtm_10}
+            - 趨勢/反轉: BBI:{bbi}, BIAS(5):{bias_5}, PSY(12):{psy_12}, DMI(+DI:{di_plus}, -DI:{di_minus}), EOM(14):{eom_14}
+            - 籌碼與其他: NVI:{nvi}, PVI:{pvi}, WC:{wc_val}, AD:{ad_val}, AR(13):{ar_13}, BR(13):{br_13}
+            
+            【任務要求】
+            1. 逐一說明這些技術指標數值在當前代表的意義（多頭、空頭或盤整）。
+            2. 特別分析 NVI/PVI 與量價指標組合出的籌碼意涵。
+            3. 結合基本面（是否低於淨值）給出綜合評價。
+            4. 最後給出明確的「操作建議」（買進、觀察、減碼或觀望）。
+            請使用繁體中文，格式清晰易讀。
+            """
+
+            with st.spinner("Gemini 正在精算指標並撰寫報告..."):
+                try:
+                    response = model.generate_content(prompt)
+                    st.markdown("---")
+                    st.markdown(response.text)
+                except Exception as e:
+                    st.error(f"AI 分析出錯: {e}")
+    else:
+        st.error("無法辨識股票代號，請確保輸入為4位數字。")
